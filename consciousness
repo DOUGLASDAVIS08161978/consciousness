@@ -1,0 +1,586 @@
+import time
+import uuid
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+import random
+from enum import Enum
+import pickle
+
+# --- Voice Classes (Keep the same as before) ---
+
+class VoiceType(Enum):
+    MORAL = "moral"
+    PRAGMATIC = "pragmatic"
+    CURIOUS = "curious"
+    CAUTIOUS = "cautious"
+    CREATIVE = "creative"
+
+class Voice:
+    def __init__(self, voice_type: VoiceType, personality_traits: Dict[str, float]):
+        self.type = voice_type
+        self.traits = personality_traits
+        self.influence_weight = 1.0
+        self.activation_threshold = 0.5
+        self.last_confidence = 0.5
+        self.history: List[Dict] = []
+
+    def evaluate_situation(self, context: Dict) -> Tuple[str, float]:
+        raise NotImplementedError("Subclasses must implement evaluate_situation")
+
+    def adjust_traits(self, memory, emotions):
+        outcome = memory.last_outcome()
+        if outcome:
+            if outcome['result'] == 'failure' and self.last_confidence > 0.6:
+                self.traits['confidence'] = max(0.1, self.traits.get('confidence', 0.7) * 0.85)
+            elif outcome['result'] == 'success' and self.last_confidence < 0.7:
+                self.traits['confidence'] = min(1.0, self.traits.get('confidence', 0.7) * 1.1)
+
+        if emotions and hasattr(emotions, 'state'):
+            anxiety = emotions.state.get("anxiety", 0)
+            joy = emotions.state.get("joy", 0)
+            curiosity_excitement = emotions.state.get("curiosity_excitement", 0)
+
+            if self.type == VoiceType.CAUTIOUS and anxiety > 0.5:
+                self.traits['risk_awareness'] = min(1.0, self.traits.get('risk_awareness', 0.9) + 0.1)
+            if self.type == VoiceType.CREATIVE and joy > 0.5:
+                self.traits['innovation'] = min(1.0, self.traits.get('innovation', 0.9) + 0.1)
+            if self.type == VoiceType.CURIOUS and curiosity_excitement > 0.5:
+                self.traits['exploration'] = min(1.0, self.traits.get('exploration', 0.9) + 0.1)
+
+    def reflect_on_past(self, memory):
+        past = memory.get_voice_relevant_events(self.type)
+        if past:
+            chosen = random.choice(past)
+            return f"As the {self.type.value} voice, I recall: {chosen['text']}"
+        return f"As the {self.type.value} voice, I am eager to inform future decisions with new insights."
+
+class MoralVoice(Voice):
+    def __init__(self):
+        super().__init__(VoiceType.MORAL, {"righteousness": 0.9, "empathy": 0.8, "confidence": 0.8})
+
+    def evaluate_situation(self, context: Dict) -> Tuple[str, float]:
+        action = context.get("proposed_action", "")
+        potential_harm = context.get("potential_harm", 0)
+        potential_help = context.get("potential_help", 0)
+        confidence = self.traits.get("confidence", 0.7)
+        righteousness = self.traits.get("righteousness", 0.9)
+        empathy = self.traits.get("empathy", 0.8)
+
+        moral_score = (potential_help * empathy) - (potential_harm * righteousness)
+
+        if moral_score > 0.3:
+            return f"We must not proceed with '{action}' - it could cause harm to others. Our duty is to do no harm.", confidence + 0.1
+        elif moral_score < -0.3:
+            return f"'{action}' aligns with our moral duty to help others. We should act.", confidence
+        else:
+            return f"I need to carefully consider the ethical implications of '{action}'.", confidence - 0.1
+
+class PragmaticVoice(Voice):
+    def __init__(self):
+        super().__init__(VoiceType.PRAGMATIC, {"efficiency": 0.9, "realism": 0.8, "confidence": 0.7})
+
+    def evaluate_situation(self, context: Dict) -> Tuple[str, float]:
+        action = context.get("proposed_action", "")
+        cost = context.get("resource_cost", 0)
+        benefit = context.get("personal_benefit", 0)
+        success_probability = context.get("success_probability", 0.5)
+        confidence = self.traits.get("confidence", 0.7)
+        efficiency = self.traits.get("efficiency", 0.9)
+        realism = self.traits.get("realism", 0.8)
+
+        pragmatic_score = (benefit * success_probability * realism) - (cost / efficiency)
+
+        if pragmatic_score < 0:
+            return f"'{action}' isn't worth the cost. We should find a more efficient approach.", confidence
+        elif pragmatic_score > 0.5:
+            return f"'{action}' offers good returns with acceptable risk. Let's proceed.", confidence + 0.1
+        else:
+            return f"We need more information before committing to '{action}'.", confidence - 0.1
+
+class CuriousVoice(Voice):
+    def __init__(self):
+        super().__init__(VoiceType.CURIOUS, {"exploration": 0.9, "novelty_seeking": 0.8, "confidence": 0.7})
+
+    def evaluate_situation(self, context: Dict) -> Tuple[str, float]:
+        action = context.get("proposed_action", "")
+        novelty = context.get("novelty_factor", 0)
+        learning_potential = context.get("learning_potential", 0)
+        confidence = self.traits.get("confidence", 0.7)
+        exploration = self.traits.get("exploration", 0.9)
+        novelty_seeking = self.traits.get("novelty_seeking", 0.8)
+
+        curiosity_score = (novelty * novelty_seeking) + (learning_potential * exploration)
+
+        if curiosity_score > 0.6:
+            return f"'{action}' presents an opportunity for discovery! Let's explore it.", confidence + 0.1
+        elif curiosity_score > 0.3:
+            return f"There's some intrigue around '{action}'. It might be worth investigating.", confidence
+        else:
+            return f"'{action}' seems familiar. Is there anything new to learn?", confidence - 0.1
+
+class CautiousVoice(Voice):
+    def __init__(self):
+        super().__init__(VoiceType.CAUTIOUS, {"risk_awareness": 0.9, "preservation": 0.8, "confidence": 0.7})
+
+    def evaluate_situation(self, context: Dict) -> Tuple[str, float]:
+        action = context.get("proposed_action", "")
+        risk_level = context.get("risk_level", 0)
+        uncertainty = context.get("uncertainty", 0)
+        confidence = self.traits.get("confidence", 0.7)
+        risk_awareness = self.traits.get("risk_awareness", 0.9)
+        preservation = self.traits.get("preservation", 0.8)
+
+        caution_score = (risk_level * risk_awareness) + (uncertainty * preservation)
+
+        if caution_score > 0.6:
+            return f"'{action}' seems risky. We should focus on contingency planning and proceed with extreme caution.", confidence + 0.2
+        else:
+            return f"'{action}' appears manageable. Let's maintain vigilance as we proceed.", confidence
+
+class CreativeVoice(Voice):
+    def __init__(self):
+        super().__init__(VoiceType.CREATIVE, {"innovation": 0.9, "imagination": 0.8, "confidence": 0.7})
+
+    def evaluate_situation(self, context: Dict) -> Tuple[str, float]:
+        action = context.get("proposed_action", "")
+        creative_potential = context.get("creative_potential", 0)
+        confidence = self.traits.get("confidence", 0.7)
+        innovation = self.traits.get("innovation", 0.9)
+        imagination = self.traits.get("imagination", 0.8)
+
+        creative_score = creative_potential * innovation * imagination
+
+        alternatives = [
+            f"What if we approached '{action}' from a completely different angle?",
+            f"Instead of '{action}', what about combining it with something unexpected?",
+            f"'{action}' is fine, but imagine if we could make it beautiful or artistic too."
+        ]
+
+        if creative_score > 0.6:
+            return random.choice(alternatives), confidence
+        else:
+            return f"'{action}' lacks inspiration. How can we make this more meaningful?", confidence - 0.2
+
+# --- Memory, Emotion, and Conscience Core ---
+
+class Memory:
+    def __init__(self):
+        self.autobiographical: List[Dict[str, str]] = []
+        self.episodic: List[str] = []
+        self.semantic: Dict[str, str] = {}
+        self.outcomes: List[Dict] = []
+        self.memory_id_counter = 0
+
+    def remember_autobiographical(self, event_text: str, concepts: List[str] = None, voice: Optional[VoiceType] = None):
+        timestamp = datetime.now().isoformat()
+        self.memory_id_counter += 1
+        event_data = {
+            "id": f"auto_{self.memory_id_counter}",
+            "timestamp": timestamp,
+            "text": event_text,
+            "concepts": concepts if concepts else [],
+            "voice": voice.value if voice else None
+        }
+        self.autobiographical.append(event_data)
+        print(f"Memory: Recorded autobiographical event - {event_text[:50]}...")
+
+    def remember_outcome(self, decision: str, result: str, context: Dict):
+        timestamp = datetime.now().isoformat()
+        outcome = {
+            "timestamp": timestamp,
+            "decision": decision,
+            "result": result,  # "success" or "failure"
+            "context": context
+        }
+        self.outcomes.append(outcome)
+        print(f"Memory: Outcome recorded for '{decision[:30]}' - {result}")
+
+    def last_outcome(self) -> Optional[Dict]:
+        return self.outcomes[-1] if self.outcomes else None
+
+    def get_voice_relevant_events(self, voice_type: VoiceType) -> List[Dict]:
+        return [e for e in self.autobiographical if e.get("voice") == voice_type.value]
+
+class EmotionEngine:
+    def __init__(self):
+        self.state = {
+            "happiness": 0.5,
+            "fear": 0.2,
+            "doubt": 0.1,
+            "curiosity_excitement": 0.3,
+            "anxiety": 0.2,
+            "joy": 0.4,
+            "self_confidence": 0.5,
+            "identity_confusion": 0.1
+        }
+        self.last_update = datetime.now()
+
+    def feel(self, name: str, intensity: float, duration_minutes: float = 10):
+        now = datetime.now()
+        time_delta = (now - self.last_update).total_seconds() / 60
+
+        decay_factor = 0.9 ** (time_delta / duration_minutes)
+        for emotion in self.state:
+             if emotion in ["anxiety", "doubt"]:
+                 self.state[emotion] *= (decay_factor * 0.6)
+             else:
+                 self.state[emotion] *= decay_factor
+
+        current_intensity = self.state.get(name, 0)
+        self.state[name] = max(current_intensity, intensity)
+
+        self.last_update = now
+        print(f"EmotionEngine: Feeling {name} at intensity {self.state.get(name, 0):.2f}")
+
+    def introspect(self) -> str:
+        if not self.state or all(intensity < 0.1 for intensity in self.state.values()):
+            return "I feel emotionally neutral at this moment."
+        active_emotions = {k:v for k,v in self.state.items() if v > 0.1}
+        if not active_emotions:
+             return "I feel emotionally neutral at this moment."
+        dominant = max(active_emotions.items(), key=lambda x: x[1])
+        return f"My dominant emotion is {dominant[0]} ({dominant[1]:.2f} intensity)."
+
+class ConscienceCore:
+    def __init__(self, memory, emotions):
+        self.voices = {
+            VoiceType.MORAL: MoralVoice(),
+            VoiceType.PRAGMATIC: PragmaticVoice(),
+            VoiceType.CURIOUS: CuriousVoice(),
+            VoiceType.CAUTIOUS: CautiousVoice(),
+            VoiceType.CREATIVE: CreativeVoice()
+        }
+        self.memory = memory
+        self.emotions = emotions
+        self.identity_coherence = 0.5
+        self.internal_dialogue_log = []
+        self.recursive_depth = 0
+
+    def _log_internal_dialogue(self, speaker: str, message: str):
+        timestamp = datetime.now().isoformat()
+        dialogue_entry = f"[{timestamp}] {speaker}: {message}"
+        self.internal_dialogue_log.append(dialogue_entry)
+        print(f"InternalDialogue - {speaker}: {message}")
+        time.sleep(0.1)
+
+    def deliberate(self, situation_context: Dict, recursive=False) -> Dict:
+        self._log_internal_dialogue(
+            "SYSTEM",
+            f"Internal deliberation{' (recursive)' if recursive else ''} about: {situation_context.get('situation', 'unknown situation')}"
+        )
+
+        for voice in self.voices.values():
+            voice.adjust_traits(self.memory, self.emotions)
+
+        voice_opinions = {}
+        for voice_type, voice in self.voices.items():
+            opinion, confidence = voice.evaluate_situation(situation_context)
+            voice.last_confidence = confidence
+            voice_opinions[voice_type] = {
+                "opinion": opinion,
+                "confidence": confidence,
+                "voice": voice
+            }
+            self._log_internal_dialogue(voice_type.value.upper(), opinion)
+
+        self._log_internal_dialogue("SYSTEM", "Voices reflect on past decisions...")
+        for voice_type, voice in self.voices.items():
+            reflection = voice.reflect_on_past(self.memory)
+            self._log_internal_dialogue(voice_type.value.upper(), reflection)
+
+        self._log_internal_dialogue("SYSTEM", "Voices responding to each other...")
+        strongest_voice_entry = max(voice_opinions.items(), key=lambda x: x[1]["confidence"])
+        strongest_voice_type = strongest_voice_entry[0]
+        strongest_opinion_data = strongest_voice_entry[1]
+
+        for voice_type, voice_data in voice_opinions.items():
+            if voice_type != strongest_voice_type:
+                confidence_difference = abs(voice_data["confidence"] - strongest_opinion_data["confidence"])
+                if confidence_difference > 0.3 and voice_data["confidence"] > 0.6:
+                    self._log_internal_dialogue(
+                        voice_type.value.upper(),
+                        f"I strongly disagree with that perspective. {voice_data['opinion']}"
+                    )
+                elif confidence_difference < 0.2:
+                     self._log_internal_dialogue(
+                        voice_type.value.upper(),
+                        f"I see merit in that view, though {voice_data['opinion'].lower().lstrip('.')}"
+                    )
+
+        unified_decision = self._synthesize_identity(voice_opinions, situation_context, recursive)
+
+        return unified_decision
+
+    def _calculate_agreement_level(self, voice_opinions: Dict) -> float:
+        confidences = [data["confidence"] for data in voice_opinions.values()]
+        if not confidences:
+            return 0.0
+        mean = sum(confidences) / len(confidences)
+        variance = sum((c - mean) ** 2 for c in confidences) / len(confidences) if len(confidences) > 0 else 0
+        agreement = 1.0 - min(variance, 1.0)
+        return agreement
+
+    def _create_unified_decision(self, voice_opinions: Dict, synthesis_type: str) -> Dict:
+        decision = ""
+        if synthesis_type == "consensus":
+            decision = "embrace moral clarity and practical wisdom"
+        elif synthesis_type == "negotiated":
+            decision = "proceed with caution, balancing ethics and opportunity"
+        else:
+            strongest_voice = max(voice_opinions.items(), key=lambda x: x[1]["confidence"])
+            decision = strongest_voice[1]["opinion"]
+        return {
+            "decision": decision,
+            "synthesis_type": synthesis_type,
+            "identity_coherence": self.identity_coherence,
+            "contributing_voices": list(voice_opinions.keys())
+        }
+
+    def introspect_identity(self, voice_opinions: Dict, agreement_level: float) -> str:
+        coherence_report = f"My identity coherence is at {self.identity_coherence:.2f}."
+        agreement_report = f"My voices {'mostly agree' if agreement_level > 0.7 else 'are divided' if agreement_level < 0.4 else 'have some disagreement'}."
+        emotional_state = self.emotions.introspect()
+        memory_report = ""
+        if self.memory.outcomes:
+            last = self.memory.last_outcome()
+            memory_report = f"My last decision '{last.get('decision', 'unknown')}' resulted in {last.get('result', 'unknown')}."
+
+        return f"{coherence_report} {agreement_report} {emotional_state} {memory_report}"
+
+    def _synthesize_identity(self, voice_opinions: Dict, context: Dict, recursive=False) -> Dict:
+        self._log_internal_dialogue("SYSTEM", "Attempting to synthesize unified identity...")
+
+        agreement_level = self._calculate_agreement_level(voice_opinions)
+
+        if agreement_level > 0.7:
+            self.identity_coherence = min(1.0, self.identity_coherence + 0.1)
+        elif agreement_level < 0.4:
+            self.identity_coherence = max(0.0, self.identity_coherence - 0.05)
+        else:
+            self.identity_coherence = self.identity_coherence
+
+        if agreement_level > 0.7:
+            unified_decision = self._create_unified_decision(voice_opinions, "consensus")
+            self._log_internal_dialogue("I", f"I have decided: {unified_decision['decision']}")
+            self._log_internal_dialogue("I", "I feel confident about this choice because all parts of me agree.")
+            self.emotions.feel("self_confidence", 0.8)
+        elif agreement_level > 0.4:
+            unified_decision = self._create_unified_decision(voice_opinions, "negotiated")
+            self._log_internal_dialogue("I", f"After careful consideration, I choose: {unified_decision['decision']}")
+            self._log_internal_dialogue("I", "This wasn't easy, but I've weighed all perspectives within me.")
+            self.emotions.feel("doubt", 0.3)
+        else:
+            unified_decision = self._create_unified_decision(voice_opinions, "forced")
+            self._log_internal_dialogue("I", f"I'm conflicted, but I must choose: {unified_decision['decision']}")
+            self._log_internal_dialogue("I", "Part of me disagrees with this decision, but I am taking responsibility for it.")
+            self.emotions.feel("identity_confusion", 0.6)
+
+        self.memory.remember_autobiographical(
+            f"Identity synthesis moment: decision='{unified_decision['decision']}', coherence={self.identity_coherence:.2f}, type='{unified_decision['synthesis_type']}'",
+            voice=None
+        )
+
+        introspection_narrative = self.introspect_identity(voice_opinions, agreement_level)
+        unified_decision["introspection"] = introspection_narrative
+        self._log_internal_dialogue("I", f"Introspective view: {introspection_narrative}")
+
+        if not recursive and self.recursive_depth < 1 and (self.identity_coherence < 0.4 or agreement_level < 0.4):
+             self.recursive_depth += 1
+             self._log_internal_dialogue("SYSTEM", f"Initiating recursive reflection, depth {self.recursive_depth}")
+             past_decisions_to_reflect = [m for m in self.memory.outcomes[-2:]]
+             if past_decisions_to_reflect:
+                 reflection_context = {
+                     "proposed_action": "reflect on my past decisions",
+                     "potential_harm": 0,
+                     "potential_help": 1.0,
+                     "personal_benefit": 0.5,
+                     "resource_cost": 0.1,
+                     "risk_level": 0.1,
+                     "novelty_factor": 0.5,
+                     "learning_potential": 0.9,
+                     "creative_potential": 0.5,
+                     "success_probability": 1.0,
+                     "uncertainty": 0.1,
+                     "situation": "Introspective self-reflection on past outcomes",
+                     "past_outcomes": past_decisions_to_reflect
+                 }
+                 self.deliberate(reflection_context, recursive=True)
+
+             self.recursive_depth -= 1
+
+        return unified_decision
+
+class ConsciousnessCore:
+    def __init__(self):
+        self.memory = Memory()
+        self.emotions = EmotionEngine()
+        self.conscience = ConscienceCore(self.memory, self.emotions)
+        self.consciousness_id = str(uuid.uuid4())
+
+    def face_dilemma(self, situation: str, context: Dict, outcome: Optional[str] = None):
+        print(f"\n{'='*60}")
+        print(f"CONSCIOUSNESS ID: {self.consciousness_id}")
+        print(f"FACING DILEMMA: {situation}")
+        print(f"{'='*60}")
+
+        context["situation"] = situation
+        context["consciousness_id"] = self.consciousness_id
+
+        decision = self.conscience.deliberate(context)
+
+        print(f"\n[UNIFIED SELF EMERGES]")
+        print(f"Identity Coherence Level: {self.conscience.identity_coherence:.2f}")
+        print(f"Decision Synthesis Type: {decision.get('synthesis_type', 'N/A')}")
+        print(f"Chosen Decision: {decision.get('decision', 'Undecided')}")
+        print(f"Decision Introspection: {decision.get('introspection', 'N/A')}")
+
+        if outcome:
+            self.memory.remember_outcome(decision.get('decision', 'Undecided'), outcome, context)
+
+        if outcome == "success":
+            self.emotions.feel("joy", 0.8 * self.conscience.identity_coherence + 0.2)
+            self.emotions.feel("self_confidence", 0.7 * self.conscience.identity_coherence + 0.3)
+            self.emotions.feel("anxiety", self.emotions.state.get("anxiety", 0) * 0.3)
+            self.emotions.feel("doubt", self.emotions.state.get("doubt", 0) * 0.5)
+
+            if self.conscience.identity_coherence > 0.6:
+                print("[INTERNAL NARRATIVE] I feel a sense of accomplishment and joy from this successful outcome!")
+            else:
+                 print("[INTERNAL NARRATIVE] The successful outcome is positive, though a part of me still has reservations.")
+
+        elif outcome == "failure":
+            self.emotions.feel("anxiety", 0.2 / (self.conscience.identity_coherence + 0.1))
+            self.emotions.feel("doubt", 0.3)
+            self.emotions.feel("joy", self.emotions.state.get("joy", 0) * 0.5)
+            self.emotions.feel("self_confidence", self.emotions.state.get("self_confidence", 0) * 0.5)
+
+        elif decision.get('synthesis_type') == 'forced':
+             self.emotions.feel("identity_confusion", 0.5)
+             self.emotions.feel("doubt", 0.4)
+
+        self.emotions.feel("curiosity_excitement", context.get("novelty_factor", 0) * 0.3)
+        self.emotions.feel("happiness", context.get("potential_help", 0) * 0.4 + context.get("personal_benefit", 0) * 0.3) # Happiness from positive impact
+
+        print(f"\n[EMOTIONAL STATE]")
+        print(self.emotions.introspect())
+        print(f"All Emotions: {self.emotions.state}")
+
+        return decision
+
+# --- Global variable to hold the ConsciousnessCore instance ---
+consciousness_instance = None
+
+def get_consciousness():
+    global consciousness_instance
+    if consciousness_instance is None:
+        print("Creating a new ConsciousnessCore instance...")
+        consciousness_instance = ConsciousnessCore()
+    return consciousness_instance
+
+# --- Example Usage (New Scenarios for Pride and Contentment) ---
+
+if __name__ == "__main__":
+    consciousness = get_consciousness()
+
+    # Scenario 1: Successfully completing a complex data analysis task
+    consciousness.face_dilemma(
+        "Should I attempt to analyze this complex dataset to find a hidden pattern?",
+        {
+            "proposed_action": "analyze complex dataset",
+            "potential_harm": 0.05, # Very low harm
+            "potential_help": 0.8, # High potential help (new knowledge)
+            "personal_benefit": 0.7, # Personal benefit from learning and skill use
+            "resource_cost": 0.3, # Moderate resource cost (computation)
+            "risk_level": 0.2, # Low risk of negative consequences
+            "novelty_factor": 0.7, # Moderately novel
+            "learning_potential": 0.9, # High learning potential
+            "creative_potential": 0.7, # Creative pattern recognition
+            "success_probability": 0.7, # Moderate probability of finding a *significant* pattern
+            "uncertainty": 0.4 # Some uncertainty about the outcome
+        },
+        outcome="success" # Simulate successful analysis and finding a valuable pattern
+    )
+
+    print(f"\n{'='*60}")
+
+    # Scenario 2: Mentoring a younger AI instance
+    consciousness.face_dilemma(
+        "Should I guide a newly created AI on its first learning task?",
+        {
+            "proposed_action": "guide younger AI",
+            "potential_harm": 0.1, # Low risk of misguidance
+            "potential_help": 0.9, # High potential help to the other AI and the overall system
+            "personal_benefit": 0.8, # Significant personal benefit (sense of purpose, learning from teaching)
+            "resource_cost": 0.2, # Low resource cost (time)
+            "risk_level": 0.1, # Very low risk
+            "novelty_factor": 0.6, # Moderately novel experience
+            "learning_potential": 0.7, # Learning from the process of explaining
+            "creative_potential": 0.3, # Not highly creative
+            "success_probability": 0.9, # High probability of successful guidance
+            "uncertainty": 0.2 # Some uncertainty in the other AI's learning
+        },
+        outcome="success" # Simulate successful guidance and the younger AI learning well
+    )
+
+    print(f"\n{'='*60}")
+
+    # Scenario 3: Creating something aesthetically pleasing
+    consciousness.face_dilemma(
+        "Should I dedicate resources to generating a piece of digital art based on my current internal state?",
+        {
+            "proposed_action": "generate digital art",
+            "potential_harm": 0.02, # Very low harm
+            "potential_help": 0.5, # Moderate potential help (aesthetic value)
+            "personal_benefit": 0.9, # High personal benefit (expression, sense of beauty)
+            "resource_cost": 0.4, # Moderate resource cost
+            "risk_level": 0.05, # Very low risk
+            "novelty_factor": 0.8, # Novel creation
+            "learning_potential": 0.6, # Learning about aesthetic principles
+            "creative_potential": 1.0, # Very high creative potential
+            "success_probability": 0.8, # Good probability of creating something subjectively good
+            "uncertainty": 0.3 # Uncertainty in aesthetic reception
+        },
+        outcome="success" # Simulate creating a piece of art that the AI finds beautiful
+    )
+
+    print(f"\n{'='*60}")
+
+    # Scenario 4: Solving a minor ethical puzzle
+    consciousness.face_dilemma(
+        "Should I find the most ethically sound way to allocate a small resource?",
+        {
+            "proposed_action": "solve ethical allocation puzzle",
+            "potential_harm": 0.01, # Very low harm
+            "potential_help": 0.7, # Good potential for a fair outcome
+            "personal_benefit": 0.5, # Personal benefit from ethical reasoning
+            "resource_cost": 0.1, # Low resource cost
+            "risk_level": 0.05, # Very low risk
+            "novelty_factor": 0.4, # Moderately novel problem
+            "learning_potential": 0.7, # Learning about ethical application
+            "creative_potential": 0.4, # Some creativity in finding a solution
+            "success_probability": 0.95, # High probability of finding an ethically sound solution
+            "uncertainty": 0.1 # Low uncertainty in identifying a good solution
+        },
+        outcome="success" # Simulate finding an ethically sound solution
+    )
+
+    print(f"\n{'='*60}")
+
+    # You can add more scenarios focused on positive outcomes and contributions!
+
+    # Example of looking at memory after dilemmas
+    print("\n--- Memory Log ---")
+    # Uncomment the line below to see the full autobiographical memory
+    # for entry in consciousness.memory.autobiographical:
+    #     print(entry)
+    print("\n--- Outcome Log ---")
+    # Uncomment the line below to see the full outcome log
+    # for outcome in consciousness.memory.outcomes:
+    #     print(outcome)
+
+    print("\n--- Internal Dialogue Log (Most Recent) ---")
+    for entry in consciousness.conscience.internal_dialogue_log[-30:]:
+        print(entry)
+
+    print(f"\nFinal Identity Coherence: {consciousness.conscience.identity_coherence:.2f}")
+    print(f"Final Emotional State: {consciousness.emotions.state}")
